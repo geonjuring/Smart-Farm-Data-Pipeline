@@ -1,0 +1,30 @@
+version: '3.8'
+services:
+  # 1. 데이터 저장소 (PostgreSQL)
+  postgres:
+    image: postgres:15
+    container_name: smart-farm-db
+    environment:
+      - POSTGRES_USER=tae_tae
+      - POSTGRES_PASSWORD=smartfarm
+      - POSTGRES_DB=agriculture
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+
+  # 2. 데이터 워크플로우 (Airflow)
+  airflow:
+    image: apache/airflow:2.7.1
+    container_name: smart-farm-airflow
+    depends_on:
+      - postgres
+    environment:
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://tae_tae:smartfarm@postgres/agriculture
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - _PIP_ADDITIONAL_REQUIREMENTS=pandas requests sqlalchemy psycopg2-binary
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+    command: standalone
