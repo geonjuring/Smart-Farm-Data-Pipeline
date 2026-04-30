@@ -20,3 +20,7 @@
 ## 4. 실행 결과
 * **Airflow DAG**: 모든 작업이 성공적으로 스케줄링됨을 확인.
 * **Database**: PostgreSQL 테이블에 실시간 기온, 습도 등 8종의 기상 데이터가 정상 적재됨을 확인.
+
+<img width="1583" height="591" alt="Image" src="https://github.com/user-attachments/assets/7d670cc8-f524-4c1a-849a-db7d400230b9" />
+
+<img width="1001" height="322" alt="Image" src="https://github.com/user-attachments/assets/c31788c3-cbc2-42d7-9765-56bd993a795f" />
