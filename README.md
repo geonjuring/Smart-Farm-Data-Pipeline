@@ -1,26 +1,36 @@
-# Smart-Farm-Data-Pipeline 🌿
+🍓 Smart Farm Data Pipeline & AI Forecast System
+본 프로젝트는 과거 농가 환경 데이터와 실시간 기상청 예보 데이터를 결합하여, 딸기 비닐하우스 내부의 온습도를 예측하고 최적의 재배 가이드를 제공하는 지능형 데이터 파이프라인 구축 프로젝트입니다.
 
-> **Airflow와 Docker를 활용한 스마트팜 실시간 기상 데이터 수집 및 자동화 인프라 구축**
+🚀 Key Achievements (현재 진행 상황)
+다중 변수 회귀 모델 구축: 외부 기온, 풍속, 강우 데이터를 결합한 Multiple Linear Regression 모델 구현.
 
-## 1. 프로젝트 개요
-스마트팜 지능형 관리 시스템 구축의 1단계로, 기상청 공공데이터 API를 활용하여 외부 환경 데이터를 실시간으로 수집하고 PostgreSQL 데이터베이스에 자동 적재하는 ETL 파이프라인을 구축했습니다.
+데이터 파이프라인 자동화: Apache Airflow를 통한 데이터 수집, 학습, 예측 및 DB 적재 전 과정 자동화.
 
-## 2. 기술 스택 (Tech Stack)
-* **Orchestration**: Apache Airflow
-* **Database**: PostgreSQL
-* **Infrastructure**: Docker, Docker Compose
-* **Language**: Python (Requests, PostgresHook, dotenv)
+모델 성능 지표: MAE 3.17도 / R2 Score 0.61 달성 (성능 최적화 진행 중).
 
-## 3. 핵심 기능 및 문제 해결 (Troubleshooting)
-* **API 데이터 파이프라인 자동화**: 매시간 정각(`@hourly`) 기상 실황 데이터를 수집하도록 스케줄링 구현.
-* **데이터 정합성 해결**: API 응답 필드명 오류(`obsValue` -> `obsrValue`)를 로그 분석을 통해 발견하고 수정하여 데이터 유실 방지.
-* **보안 관리**: `.env` 파일과 환경 변수를 활용하여 API 키 및 DB 자격 증명을 코드에서 분리하여 보안성 강화.
-* **인프라 표준화**: Docker Compose를 통해 개발 환경에 구애받지 않는 독립적인 데이터 수집 환경 구축.
+🛠 Tech Stack
+Languages: Python (Scikit-learn, Pandas)
 
-## 4. 실행 결과
-* **Airflow DAG**: 모든 작업이 성공적으로 스케줄링됨을 확인.
-* **Database**: PostgreSQL 테이블에 실시간 기온, 습도 등 8종의 기상 데이터가 정상 적재됨을 확인.
+Workflow: Apache Airflow
 
-<img width="1583" height="591" alt="Image" src="https://github.com/user-attachments/assets/7d670cc8-f524-4c1a-849a-db7d400230b9" />
+Database: PostgreSQL
 
-<img width="1001" height="322" alt="Image" src="https://github.com/user-attachments/assets/c31788c3-cbc2-42d7-9765-56bd993a795f" />
+Infrastructure: Docker, WSL2
+
+AI Models: Linear Regression (Next: RAG with Gemini)
+
+📋 System Architecture
+Data Ingestion: 기상청 단기예보 API 및 과거 센서 데이터(CSV) 수집.
+
+ML Pipeline: 다중 변수를 활용한 내부 환경 예측 모델 학습 및 검증.
+
+Data Storage: PostgreSQL에 실시간 예측 수치 및 성능 로그 저장.
+
+Knowledge Base (In-progress): RAG를 활용한 딸기 재배 지식 상담 서비스 구축 중.
+
+📈 Future Roadmap
+[x] 다중 변수 기반 AI 예측 모델 최적화
+
+[ ] ChromaDB 연동 및 PDF 재배 지식 임베딩 (RAG)
+
+[ ] Gradio를 활용한 지능형 스마트팜 대시보드 시각화
