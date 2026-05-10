@@ -19,12 +19,16 @@ services:
     container_name: smart-farm-airflow
     depends_on:
       - postgres
+    env_file:
+      - .env
     environment:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://tae_tae:smartfarm@postgres/agriculture
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - _PIP_ADDITIONAL_REQUIREMENTS=pandas requests sqlalchemy psycopg2-binary
+      # 필요한 모든 라이브러리를 한 줄로 통합했습니다.
+      - _PIP_ADDITIONAL_REQUIREMENTS=scikit-learn pandas requests sqlalchemy psycopg2-binary python-dotenv
     ports:
       - "8080:8080"
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./.env:/opt/airflow/.env
     command: standalone
