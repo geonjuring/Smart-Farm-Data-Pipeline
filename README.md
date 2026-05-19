@@ -1,36 +1,51 @@
 🍓 Smart Farm Data Pipeline & AI Forecast System
 본 프로젝트는 과거 농가 환경 데이터와 실시간 기상청 예보 데이터를 결합하여, 딸기 비닐하우스 내부의 온습도를 예측하고 최적의 재배 가이드를 제공하는 지능형 데이터 파이프라인 구축 프로젝트입니다.
 
-🚀 Key Achievements (현재 진행 상황)
-다중 변수 회귀 모델 구축: 외부 기온, 풍속, 강우 데이터를 결합한 Multiple Linear Regression 모델 구현.
+## 🚀  (2026-5-10) 진행 상황
+* **다중 변수 회귀 모델 구축**: 외부 기온, 풍속, 강우 데이터를 결합한 Multiple Linear Regression 모델 구현.
 
-데이터 파이프라인 자동화: Apache Airflow를 통한 데이터 수집, 학습, 예측 및 DB 적재 전 과정 자동화.
+* **데이터 파이프라인 자동화**: Apache Airflow를 통한 데이터 수집, 학습, 예측 및 DB 적재 전 과정 자동화.
 
-모델 성능 지표: MAE 3.17도 / R2 Score 0.61 달성 (성능 최적화 진행 중).
+* **모델 성능 지표**: MAE(평균 절대 오차): 3.17도 / $R^2$ Score(결정계수):: 0.61 달성 (성능 최적화 진행 중).
+* **내부온도 예측**  $R^2$ Score: 0.6177 (61.7%)
+* **내부습도 예측**  $R^2$ Score: 0.0855 (8.5%)
 
-🛠 Tech Stack
-Languages: Python (Scikit-learn, Pandas)
+## 🚀 1주차(2026-5-11~20) 진행상황: 데이터 파이프라인 고도화 및 ML 모델 성능 개선 (New!)
+기존 파이프라인의 수집 및 학습 데이터 스펙을 전면 개편하고 피처 엔지니어링을 적용했습니다. 스마트팜 온실효과의 핵심 도메인 지표인 **`일사량_외부`** 데이터를 발굴하여 피처로 추가했고, 이를 통해 내부 온습도 예측 모델의 정확도를 대폭 끌어올렸습니다.
 
-Workflow: Apache Airflow
+* **시스템 연동:** Airflow DAG (`strawberry_ai_forecast_final`) 정상 구동 및 PostgreSQL 내 `kma_solar_rad (FLOAT)` 실시간 가상 센서 데이터 적재 완료
+* **다중 변수 회귀 모델 구축:** 외부 기온, 풍속, 강우 데이터에 **'일사량' 독립 변수**를 결합한 Multiple Linear Regression 모델 고도화 구현.
+* **데이터 파이프라인 자동화:** Apache Airflow를 통한 데이터 수집, 학습, 예측 및 DB 적재 전 과정 자동화.
+* **모델 성능 지표:**: MAE: 2.4973도 /  $R^2$ Score: 0.7325
+* **내부온도 예측** $R^2$ Score: 0.7325 (73.2%)
+* **내부습도 예측** $R^2$ Score: 0.2184 (21.8%)
+* **데이터셋 스펙 변화:** 기존 6개 변수 기반에서 핵심 피처인 **`일사량_외부`**를 추가하여 총 7개 수집 및 매핑 완료
+* **🌡️ 내부 온도 예측 모델 성능 향상:** - 결정계수 ($R^2$ Score): `0.6177 (61.7%)` ──> **`0.7325 (73.2%)` (+11.48%p 폭등)**
+  - 평균 절대 오차 (MAE): **`2.4973 °C` 달성 (오차 범위 0.68 °C 단축)** 🔥
+* **💧 내부 습도 예측 모델 성능 및 한계점:**
+  - 결정계수 ($R^2$ Score): `0.0855 (8.5%)` ──> **`0.2184 (21.8%)` (+13.29%p 상승)**
+  - *분석 및 보완점:* 일사량 추가로 성능이 개선되었으나, 습도 예측력($R^2$ 0.21)은 온도에 비해 여전히 낮습니다. 비닐하우스 내부 습도는 외부 날씨(21% 설명력)보다 **작물의 증산 작용(생육 단계별 호흡량)과 농가의 환기/보온 제어 이력**에 더 큰 영향을 받기 때문입니다. 이를 해결하기 위해 차기 주차에 **'도메인 컨텍스트 데이터(생육 단계, 정식일)'를 DB화하여 모델에 공급하는 알고리즘 보완 계획을 수립**했습니다.
 
-Database: PostgreSQL
 
-Infrastructure: Docker, WSL2
+---
 
-AI Models: Linear Regression (Next: RAG with Gemini)
+## 🚀 2주차(2026-5-21~) 진행상황: 
 
-📋 System Architecture
-Data Ingestion: 기상청 단기예보 API 및 과거 센서 데이터(CSV) 수집.
+## 🛠 Tech Stack
+* **Languages:** Python (Scikit-learn, Pandas)
+* **Workflow:** Apache Airflow
+* **Database:** PostgreSQL
+* **Infrastructure:** Docker, WSL2
+* **AI Models:** Multiple Linear Regression (Next: Hybrid RAG System with Gemini)
 
-ML Pipeline: 다중 변수를 활용한 내부 환경 예측 모델 학습 및 검증.
+## 📋 System Architecture
+* **Data Ingestion:** 기상청 단기예보 API 및 과거 센서 데이터(CSV) 수집 및 가상 센서 모델을 통한 일사량 전처리.
+* **Context Data (In-progress):** 일출·일몰 시간, 작물별 생육 단계 및 정식일 데이터 데이터베이스 동기화.
+* **ML Pipeline & Automation:** 매일 아침 7시, 머신러닝 예측 기반으로 당일 농가가 수행해야 할 환기/보온 등 **'자동 작업 알림' 로직** 스케줄링 가동.
+* **Knowledge Base (In-progress):** 대용량 딸기 재배 지식 문서(PDF) 연동 및 농가 맞춤형 **'지능형 궁금증 검색(RAG) 기능'** 구축 중.
 
-Data Storage: PostgreSQL에 실시간 예측 수치 및 성능 로그 저장.
-
-Knowledge Base (In-progress): RAG를 활용한 딸기 재배 지식 상담 서비스 구축 중.
-
-📈 Future Roadmap
-[x] 다중 변수 기반 AI 예측 모델 최적화
-
-[ ] ChromaDB 연동 및 PDF 재배 지식 임베딩 (RAG)
-
-[ ] Gradio를 활용한 지능형 스마트팜 대시보드 시각화
+## 📈 Future Roadmap
+* [x] 1주차: 다중 변수 기반 AI 예측 모델 최적화 (일사량 피처 추가로 온도 정확도 73.2% 달성)
+* [ ] 2주차: 도메인 컨텍스트 확장 (일출몰 시간, 생육 단계 및 정식일 데이터 테이블 설계 및 DB 구조 확장)
+* [ ] 3주차: 지능형 스케줄러 고도화 (매일 아침 7시 ML 예측 온습도 기반 '당일 농가 필수 작업 자동 알림 시스템' 구현)
+* [ ] 4주차: 하이브리드 검색 기반 RAG 아키텍처 및 UI 구현 (ChromaDB 연동을 통해 농가의 재배 궁금증 전문 검색 기능 및 Gradio 대시보드 구축)
