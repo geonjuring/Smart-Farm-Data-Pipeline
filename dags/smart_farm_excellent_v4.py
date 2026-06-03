@@ -1,126 +1,123 @@
-import os
-import requests
-import pandas as pd
-from datetime import datetime
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, r2_score
-from dotenv import load_dotenv
-
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.postgres.hooks.postgres import PostgresHook
+from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, r2_score
+import psycopg2
 
-def get_env_path():
-    base_dir = os.path.dirname(__file__)
-    return os.path.join(base_dir, '..', '.env')
+# 기본 설정 (DAG Arguments)
+default_args = {
+    'owner': 'geon_tae',
+    'depends_on_past': False,
+    'start_date': datetime(2026, 1, 1), # 2026년 기준 가동
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
 
-# [설정] 건태님의 경로를 반영한 컨테이너 내부 경로
-CSV_PATH = '/opt/airflow/dags/data/2022_env.csv'
-
-def get_external_weather():
-    """기상청 단기예보 API: TMP(기온), WSD(풍속), PCP(강수량) 수집"""
-    url = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
-    load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
-    api_key = os.getenv("DATA_GO_KR_API_KEY")
-    base_date = datetime.now().strftime('%Y%m%d')
+def train_and_evaluate_task():
+    print("========= [Airflow Task] 스마트팜 ML 파이프라인 고도화 가동 =========")
     
-    params = {
-        'serviceKey': api_key, 'pageNo': '1', 'numOfRows': '1000', 'dataType': 'JSON',
-        'base_date': base_date, 'base_time': '0500', 'nx': '95', 'ny': '77'
-    }
-    
+    # 1. 원본 데이터 로드 (Airflow 가동 서버 내의 CSV 경로 확인 필요)
     try:
-        response = requests.get(url, params=params, timeout=15)
-        items = response.json().get('response', {}).get('body', {}).get('items', {}).get('item', [])
-        
-        forecast_dict = {}
-        for item in items:
-            time = item['fcstTime']
-            if time not in forecast_dict:
-                forecast_dict[time] = {'time': time}
-            
-            # 다중 변수 매핑
-            if item['category'] == 'TMP': forecast_dict[time]['temp'] = float(item['fcstValue'])
-            if item['category'] == 'WSD': forecast_dict[time]['wind'] = float(item['fcstValue'])
-            if item['category'] == 'PCP': 
-                val = item['fcstValue']
-                # 강수량을 '강우감지' 바이너리 데이터(0 또는 1)로 변환
-                forecast_dict[time]['rain'] = 1.0 if val not in ['강수없음', '0'] else 0.0
+        df = pd.read_csv('/opt/airflow/dags/data/2022_env.CSV', encoding='cp949')
+        print(f"-> 원본 데이터 로드 완료 (총 {len(df):,}건)")
+    except FileNotFoundError:
+        # 만약 경로가 다르면 로컬 경로로 재시도
+        try:
+            df = pd.read_csv('2022_env.CSV', encoding='cp949')
+            print(f"-> 로컬 경로에서 데이터 로드 완료 (총 {len(df):,}건)")
+        except FileNotFoundError:
+            print("🚨 에러: '2022_env.CSV' 파일을 찾을 수 없습니다.")
+            raise FileNotFoundError
 
-        return sorted([v for v in forecast_dict.values() if len(v) >= 4], key=lambda x: x['time'])[:24]
-    except Exception as e:
-        print(f"❌ 기상청 API 수집 실패: {e}")
-        return []
+    # 2. 교수님 피드백 반영: Pandas를 활용하여 '딸기' 품목만 최우선 필터링
+    strawberry_df = df[df['품목'] == '딸기'].copy()
+    print(f"-> 딸기 품목 필터링 완료 ({len(strawberry_df):,}건)")
 
-def run_strawberry_forecast():
-    """다중 회귀 모델 학습, 검증 및 예측 데이터 DB 적재"""
-    # 1. 데이터 로드 및 전처리 (다중 변수 포함)
-    df = pd.read_csv(CSV_PATH, encoding='cp949', 
-                     usecols=['품목', '온도_외부', '풍속_외부', '강우감지', '온도_내부', '상대습도_내부'])
-    strawberry_df = df[df['품목'] == '딸기'].dropna()
-    
-    # 2. 다중 변수 설정 및 데이터 분할
-    features = ['온도_외부', '풍속_외부', '강우감지']
-    X = strawberry_df[features]
+    # 3. 시계열 정렬: 선형 보간을 위해 측정시간 순서대로 정렬
+    strawberry_df['측정시간'] = pd.to_datetime(strawberry_df['측정시간'])
+    strawberry_df = strawberry_df.sort_values('측정시간')
+
+    # 4. 시계열 선형 보간법(Linear Interpolation) 적용하여 결측치 완벽 정제
+    core_columns = ['온도_외부', '일사량_외부', '강우감지', '풍속_외부', '온도_내부', '상대습도_내부']
+    for col in core_columns:
+        strawberry_df[col] = strawberry_df[col].interpolate(method='linear').ffill().bfill()
+    print(f"-> 결측치 선형 보간 완료. 최종 학습 데이터: {len(strawberry_df):,}건")
+
+    # 5. 독립 변수(X) 및 종속 변수(y) 설정 (풍속 포함 4개 변수 확정)
+    X = strawberry_df[['온도_외부', '일사량_외부', '강우감지', '풍속_외부']]
     y_temp = strawberry_df['온도_내부']
     y_hum = strawberry_df['상대습도_내부']
-    
+
+    # 6. 데이터셋 분할 및 학습
     X_train, X_test, y_temp_train, y_temp_test = train_test_split(X, y_temp, test_size=0.2, random_state=42)
     X_train_h, X_test_h, y_hum_train, y_hum_test = train_test_split(X, y_hum, test_size=0.2, random_state=42)
 
-    # 3. 모델 학습 및 MAE 검증
-    model_temp = LinearRegression().fit(X_train, y_temp_train)
-    model_hum = LinearRegression().fit(X_train_h, y_hum_train)
-    
-    temp_pred_test = model_temp.predict(X_test)
-    mae_temp = mean_absolute_error(y_temp_test, temp_pred_test)
-    r2_temp = r2_score(y_temp_test, temp_pred_test)
+    model_temp = RandomForestRegressor(n_estimators=30, max_depth=10, random_state=42).fit(X_train, y_temp_train)
+    model_hum = RandomForestRegressor(n_estimators=30, max_depth=10, random_state=42).fit(X_train_h, y_hum_train)
 
-    print(f"📊 [모델 검증 결과] MAE(평균 절대 오차): {mae_temp:.4f}도")
-    print(f"📊 [모델 검증 결과] R2 Score(결정계수): {r2_temp:.4f}")
+    # 7. 모델 검증 지표 계산
+    pred_temp = model_temp.predict(X_test)
+    pred_hum = model_hum.predict(X_test_h)
 
-    # 4. 실시간 예보 기반 미래 데이터 예측
-    weather_forecasts = get_external_weather()
-    if not weather_forecasts: return
+    mae_temp = mean_absolute_error(y_temp_test, pred_temp)
+    r2_temp = r2_score(y_temp_test, pred_temp)
+    mae_hum = mean_absolute_error(y_hum_test, pred_hum)
+    r2_hum = r2_score(y_hum_test, pred_hum)
 
-    pg_hook = PostgresHook(postgres_conn_id='postgres_default')
-    
-    # 테이블 생성
-    pg_hook.run("""
-        CREATE TABLE IF NOT EXISTS strawberry_ai_forecast (
-            id SERIAL PRIMARY KEY,
-            forecast_time TEXT,
-            pred_in_temp FLOAT,
-            pred_in_hum FLOAT,
-            kma_out_temp FLOAT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+    print(f"🌡️ 온도 예측 R2: {r2_temp:.4f} | MAE: {mae_temp:.4f}")
+    print(f"💧 습도 예측 R2: {r2_hum:.4f} | MAE: {mae_hum:.4f}")
 
-    for f in weather_forecasts:
-        # 'Feature Names' 경고 방지를 위해 DataFrame 형태로 입력
-        input_df = pd.DataFrame([[f['temp'], f['wind'], f['rain']]], columns=features)
-        
-        pred_t = model_temp.predict(input_df)[0]
-        pred_h = model_hum.predict(input_df)[0]
-        
-        pg_hook.run("""
-            INSERT INTO strawberry_ai_forecast (forecast_time, pred_in_temp, pred_in_hum, kma_out_temp)
-            VALUES (%s, %s, %s, %s)
-        """, parameters=(f['time'], float(pred_t), float(pred_h), f['temp']))
-    
-    print("✅ 내일의 딸기 농가 다중 변수 예측 및 DB 적재 성공!")
+    # 8. PostgreSQL 데이터베이스에 로그 기록 저장
+    try:
+        conn = psycopg2.connect(
+            dbname="postgres",
+            user="postgres",
+            password="password", # 건태님의 실제 DB 패스워드로 설정 필요
+            host="host.docker.internal",
+            port="5432"
+        )
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS model_performance_logs (
+                id SERIAL PRIMARY KEY,
+                run_time TIMESTAMP,
+                version_info VARCHAR(50),
+                temp_mae FLOAT,
+                temp_r2 FLOAT,
+                hum_mae FLOAT,
+                hum_r2 FLOAT
+            );
+        """)
+        cursor.execute("""
+            INSERT INTO model_performance_logs (run_time, version_info, temp_mae, temp_r2, hum_mae, hum_r2)
+            VALUES (%s, %s, %s, %s, %s, %s);
+        """, (datetime.now(), "v5", mae_temp, r2_temp, mae_hum, r2_hum))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("-> [성공] PostgreSQL에 고도화 성과 로그 적재 완료!")
+    except Exception as e:
+        print(f"🚨 DB 적재 실패: {e}")
 
-# DAG 정의
+# Airflow DAG 정의
 with DAG(
-    dag_id='strawberry_ai_forecast_final',
-    start_date=datetime(2026, 5, 1),
-    schedule_interval='0 7 * * *',
+    'smart_farm_strawberry_v5',
+    default_args=default_args,
+    description='교수님 피드백 반영: 딸기 필터링 및 시계열 선형 보간 기반의 온습도 예측 파이프라인',
+    schedule_interval='0 7 * * *',  # 매일 아침 7시 자동 가동
     catchup=False
 ) as dag:
 
-    execute_forecast = PythonOperator(
-        task_id='execute_forecast_logic',
-        python_callable=run_strawberry_forecast
+    # 머신러닝 전처리 및 학습 태스크 정의
+    ml_training_task = PythonOperator(
+        task_id='strawberry_ml_training_and_eval',
+        python_callable=train_and_evaluate_task
     )
+
+    # 태스크 가동
+    ml_training_task
