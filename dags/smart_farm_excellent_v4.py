@@ -8,6 +8,7 @@ from sklearn.metrics import mean_absolute_error, r2_score
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 import psycopg2
 
 # 기본 설정 (DAG Arguments)
@@ -171,23 +172,169 @@ def train_and_evaluate_task():
             INSERT INTO model_performance_logs (run_time, version_info, temp_mae, temp_r2, hum_mae, hum_r2)
             VALUES (%s, %s, %s, %s, %s, %s);
         """, (datetime.now(), "v6_ultimate_infrastructure", mae_temp, r2_temp, mae_hum, r2_hum))
+        
+        # 🌟 [4주차 연동 핵심 추가] 
+        # 규칙 제어 연산이 정상 작동하려면 '가장 최근 AI가 예측한 미래 온습도/VPD/DAT 스펙' 정보가 테이블에 박혀있어야 합니다.
+        # 테스트셋의 가장 마지막 시점 레코드를 기준으로 가상의 미래 예측 상황을 DB에 적재합니다.
+        latest_idx = test_df.index[-1]
+        latest_time = test_df.loc[latest_idx, '측정시간']
+        latest_dat = int(test_df.loc[latest_idx, 'DAT'])
+        latest_daytime = int(test_df.loc[latest_idx, 'Is_Daytime'])
+        
+        # 3주차 성능 테이블 구조가 결과 테이블을 겸하므로 예측치 데이터 적재 시도
+        # (만약 테이블명이 다르면 기존에 쓰시던 결과 테이블명으로 변경하세요)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS farm_crop_prediction_results (
+                측정시간 TIMESTAMP PRIMARY KEY,
+                온도_내부 NUMERIC(5,2),
+                상대습도_내부 NUMERIC(5,2),
+                내부_VPD NUMERIC(5,2),
+                Is_Daytime INT,
+                DAT INT
+            );
+        """)
+        
+        # 최신 예측치 1건 밀어넣기
+        pred_vpd_val = calculate_vpd(pred_temp[-1], pred_hum[-1])
+        cursor.execute("""
+            INSERT INTO farm_crop_prediction_results (측정시간, 온도_내부, 상대습도_내부, 내부_VPD, Is_Daytime, DAT)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (측정시간) DO UPDATE SET
+                온도_내부 = EXCLUDED.온도_내부,
+                상대습도_내부 = EXCLUDED.상대습도_내부,
+                내부_VPD = EXCLUDED.내부_VPD,
+                Is_Daytime = EXCLUDED.Is_Daytime,
+                DAT = EXCLUDED.DAT;
+        """, (latest_time, float(pred_temp[-1]), float(pred_hum[-1]), float(pred_vpd_val), latest_daytime, latest_dat))
+        
         conn.commit()
         cursor.close()
         conn.close()
-        print("-> [성공] 3주차 고도화 성과 데이터베이스 최종 적재 완료!")
+        print("-> [성공] 3주차 고도화 성과 및 실시간 예측 데이터베이스 최종 적재 완료!")
     except Exception as e:
-        print(f"🚨 성과 로그 DB 적재 실패: {e}")
+        print(f"🚨 성과 및 예측 로그 DB 적재 실패: {e}")
+
+
+# =============================================================================
+# 4주차 신규 오퍼레이터 함수: 규칙 기반 실시간 알림 가이드 제어 태스크
+# =============================================================================
+def generate_farm_notification():
+    print("========= [Airflow Task] 4주차 규칙 기반 실시간 알림 가이드 제어 가동 =========")
+    
+    try:
+        conn = psycopg2.connect(
+            dbname="agriculture", user="tae_tae", password="smartfarm",
+            host="host.docker.internal", port="5432"
+        )
+        cursor = conn.cursor()
+        
+        # 1. 아까 ML 학습 단에서 적재한 최신 AI 미래 예측치 1건 읽어오기
+        select_pred_query = """
+            SELECT 측정시간, 온도_내부, 상대습도_내부, 내부_VPD, Is_Daytime, DAT
+            FROM farm_crop_prediction_results
+            ORDER BY 측정시간 DESC
+            LIMIT 1;
+        """
+        cursor.execute(select_pred_query)
+        pred_data = cursor.fetchone()
+        
+        if not pred_data:
+            print("⚠️ [경고] 제어 규칙을 적용할 최근 AI 예측 데이터가 존재하지 않습니다.")
+            cursor.close()
+            conn.close()
+            return
+            
+        pred_time, pred_temp, pred_hum, pred_vpd, is_daytime, dat = pred_data
+        print(f"-> [AI 최신 예측치 로드] 시간: {pred_time} | 온도: {pred_temp}°C | 습도: {pred_hum}% | VPD: {pred_vpd} kPa")
+
+        # 2. 농민 입력 가변 정식일(DAT) 기준 현재 생육 단계(crop_phase) 동적 판정
+        if dat <= 30:
+            crop_phase = 'GROWTH'
+        elif dat <= 60:
+            crop_phase = 'FLOWER'
+        else:
+            crop_phase = 'HARVEST'
+        print(f"-> [생육컨텍스트 판정] 현재 DAT: {dat}일차 -> 생육 단계: {crop_phase} | 낮여부: {bool(is_daytime)}")
+
+        # 3. 윈도우 터미널로 구축한 DB 규칙 마스터 테이블(farm_control_rules) 데이터 전량 로드
+        select_rules_query = """
+            SELECT crop_phase, is_daytime, min_temp, max_temp, min_humidity, max_humidity, min_vpd, max_vpd, status_code, guide_message 
+            FROM farm_control_rules;
+        """
+        cursor.execute(select_rules_query)
+        rules = cursor.fetchall()
+
+        # 4. 결정론적 규칙 매칭 연산 기동 (하드코딩 배제)
+        final_status = 'STABLE'
+        final_message = '1시간 뒤 딸기 생육 환경이 안정적인 상태로 유지될 예정입니다. 현재 제어 상태를 보존하십시오.'
+        
+        # 낮/밤 조건 플래그 타입 통일 (DB는 boolean, 데이터프레임은 int 형변환 대비)
+        db_daytime_bool = True if is_daytime == 1 else False
+
+        for rule in rules:
+            r_phase, r_daytime, r_min_t, r_max_t, r_min_h, r_max_h, r_min_v, r_max_v, r_status, r_msg = rule
+            
+            # 조건 체크 1: 생육 단계 매칭 (ALL 제외)
+            if r_phase != 'ALL' and r_phase != crop_phase:
+                continue
+            # 조건 체크 2: 낮/밤 일치 여부
+            if r_daytime != db_daytime_bool:
+                continue
+                
+            # 조건 체크 3: AI 수치 임계치 도달 연산
+            is_matched = False
+            
+            if r_min_h and float(pred_hum) >= float(r_min_h): is_matched = True   # 과습 조건 위반
+            if r_max_v and float(pred_vpd) <= float(r_max_v): is_matched = True   # 결로(포차부족) 조건 위반
+            if r_min_t and float(pred_temp) < float(r_min_t): is_matched = True   # 저온 동해 조건 위반
+            if r_max_t and float(pred_temp) > float(r_max_t): is_matched = True   # 주간 과열 조건 위반
+
+            # 우선순위 높은 경고 메시지 매칭 시 확정 후 탈출
+            if is_matched:
+                final_status = r_status
+                final_message = r_msg
+                break
+
+        # 5. 최종 판정된 행동 가이드 알림을 로그 테이블(farm_notification_logs)에 실시간 적재
+        insert_log_query = """
+            INSERT INTO farm_notification_logs 
+            (predicted_target_time, pred_temperature, pred_humidity, pred_vpd, control_status, guide_message, is_read)
+            VALUES (%s, %s, %s, %s, %s, %s, FALSE);
+        """
+        cursor.execute(insert_log_query, (pred_time, float(pred_temp), float(pred_hum), float(pred_vpd), final_status, final_message))
+        conn.commit()
+        
+        print(f"🏆 [4주차 연동 성공] 제어 판정 완료: [{final_status}] -> DB 로그 최종 적재 완료!")
+        print(f"📢 도출된 농민 가이드 메시지: {final_message}")
+
+        cursor.close()
+        conn.close()
+
+    except Exception as e:
+        print(f"❌ [에러] 4주차 알림 파이프라인 연동 중 인프라 오작동 발생: {e}")
+        raise e
+
 
 # Airflow DAG 정의
 with DAG(
     'smart_farm_strawberry_v6',
     default_args=default_args,
-    description='3주차 인프라 조인 및 물리 공식 융합 파이프라인',
+    description='3~4주차 인프라 조인 및 규칙 기반 알림 자동화 파이프라인',
     schedule_interval='0 7 * * *',
     catchup=False
 ) as dag:
 
+    # Task 1: 3주차 기존 ML 프로세스
     ml_training_task = PythonOperator(
         task_id='strawberry_ml_training_and_eval',
         python_callable=train_and_evaluate_task
     )
+
+    # Task 2: 4주차 신규 제어 규칙 매칭 및 알림 적재 프로세스
+    generate_farm_notification_task = PythonOperator(
+        task_id='generate_farm_notification',
+        python_callable=generate_farm_notification
+    )
+
+    # 🔄 [4주차 파이프라인 흐름 사슬 정의]
+    ml_training_task >> generate_farm_notification_task
