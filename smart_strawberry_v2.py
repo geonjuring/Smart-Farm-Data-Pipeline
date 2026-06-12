@@ -1,79 +1,121 @@
+# smart_farm_rag.py
 import os
 import psycopg2
+from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-
-
 from langchain_chroma import Chroma
-
-
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
-
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
-from langchain_classic.chains.retrieval import create_retrieval_chain
-from dotenv import load_dotenv
-
-# .env 파일에서 API 키 로드
 load_dotenv()
 
 class SmartFarmRAG:
     def __init__(self):
-        # 1. PDF 로드 및 벡터 DB 구축
-        # WSL 경로에 맞춰 수정됨
-        pdf_path = "data/docs/농업기술길잡이40_딸기.PDF"
-        if not os.path.exists(pdf_path):
-            print(f"❌ 파일을 찾을 수 없습니다: {pdf_path}")
+        self.pdf_path = "data/docs/농업기술길잡이40_딸기.PDF"
+        self.persist_db_dir = "./chroma_db"
+        
+        # 1. OpenAI 임베딩 및 Vector DB 설정
+        self.embeddings = OpenAIEmbeddings()
+        
+        if os.path.exists(self.persist_db_dir) and os.listdir(self.persist_db_dir):
+            print("📦 기존에 구축된 ChromaDB 벡터 기지를 로드합니다...")
+            self.vector_db = Chroma(
+                persist_directory=self.persist_db_dir, 
+                embedding_function=self.embeddings
+            )
+        else:
+            print("🚀 기존 벡터 기지가 없습니다. 딸기 PDF 분석 및 초기 임베딩을 시작합니다...")
+            if not os.path.exists(self.pdf_path):
+                raise FileNotFoundError(f"❌ 딸기 가이드북 PDF를 찾을 수 없습니다: {self.pdf_path}")
+                
+            loader = PyMuPDFLoader(self.pdf_path)
+            data = loader.load()
             
-        loader = PyMuPDFLoader(pdf_path)
-        data = loader.load()
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+            chunks = text_splitter.split_documents(data)
+            
+            self.vector_db = Chroma.from_documents(
+                documents=chunks, 
+                embedding=self.embeddings,
+                persist_directory=self.persist_db_dir
+            )
+            print("✅ ChromaDB 임베딩 기지 구축 완료!")
         
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-        chunks = text_splitter.split_documents(data)
-        
-        self.vector_db = Chroma.from_documents(
-            documents=chunks, 
-            embedding=OpenAIEmbeddings(),
-            persist_directory="./chroma_db"
-        )
-        
-        # 2. LLM 설정
+        # 2. 최신 LLM 및 검색기(Retriever) 레이어 구성
         self.llm = ChatOpenAI(model_name="gpt-4-turbo", temperature=0)
+        self.retriever = self.vector_db.as_retriever(search_kwargs={"k": 4})
 
     def get_latest_sensor_data(self):
-        """PostgreSQL에서 Airflow가 수집한 최신 데이터 로드"""
+        """PostgreSQL에서 Airflow가 적재한 최신 AI 예측치 및 컨텍스트 로드"""
         try:
             conn = psycopg2.connect(
-                host="localhost", # Docker가 윈도우에서 실행중이므로 그대로 유지
-                database="agriculture",
-                user="tae_tae",
-                password="smartfarm"
+                dbname="agriculture", 
+                user="tae_tae", 
+                password="smartfarm",
+                host="localhost",
+                port="5432"
             )
-            cur = conn.cursor()
-            cur.execute("SELECT forecast_time, pred_in_temp, pred_in_hum FROM strawberry_ai_forecast ORDER BY created_at DESC LIMIT 1")
-            row = cur.fetchone()
-            cur.close()
+            cursor = conn.cursor()
+            
+            query = """
+                SELECT 측정시간, 온도_내부, 상대습도_내부, 내부_VPD
+                FROM farm_crop_prediction_results
+                ORDER BY 측정시간 DESC
+                LIMIT 1;
+            """
+            cursor.execute(query)
+            row = cursor.fetchone()
+            
+            cursor.close()
             conn.close()
-            return row if row else ("N/A", 0.0, 0.0)
+            
+            if row:
+                return row
+            else:
+                return ("N/A", 0.0, 0.0, 0.0, 0)
         except Exception as e:
-            print(f"⚠️ DB 연결 에러: {e}")
-            return ("N/A", 0.0, 0.0)
+            print(f"⚠️ [PostgreSQL RDB 연결 실패]: {e}")
+            return ("N/A", 0.0, 0.0, 0.0, 0)
 
     def ask_advisor(self, user_question):
-        ftime, temp, hum = self.get_latest_sensor_data()
+        """최신 LCEL 체인 프레임워크 기반 하이드리브 RAG 연산 가동"""
+        from datetime import datetime as dt
         
-        # 시스템 프롬프트 정의
+        
+        ftime, temp, hum, vpd = self.get_latest_sensor_data()
+        
+        
+        try:
+            real_plantation = dt(2025, 9, 15)
+            dat = (dt.now() - real_plantation).days
+        except Exception:
+            dat = 260 
+            
+        
+        if dat <= 30: crop_phase = 'GROWTH'
+        elif dat <= 60: crop_phase = 'FLOWER'
+        else: crop_phase = 'HARVEST'
+        
+        # 시스템 핵심 템플릿 정의
         system_template = f"""
-        당신은 딸기 스마트팜 전문 AI 어드바이저입니다. 
-        아래의 [현재 농장 상태]와 [가이드북 지식]을 바탕으로 관리 처방을 내리세요.
-        [현재 농장 상태] 시간: {ftime}, 온도: {temp:.2f}℃, 습도: {hum:.2f}%
+        당신은 농촌진흥청 '농업기술길잡이 딸기' 가이드북 핵심 지식을 마스터한 스마트팜 AI 어드바이저입니다.
+        현재 농장 상태와 하우스 예측 수치를 면밀히 분석한 후, 농민의 질문에 대해 실전적이고 정밀한 데이터 처방을 내리십시오.
         
-        [가이드북 지식]
+        [실시간 농장 예측 컨텍스트]
+        - 예측 대상 시간: {ftime}
+        - 정식 후 경과일 (DAT): {dat}일차 (현재 생육 단계: {crop_phase})
+        - 1시간 뒤 내부 온도 예측치: {temp:.2f}℃
+        - 1시간 뒤 내부 습도 예측치: {hum:.2f}%
+        - 1시간 뒤 물리 포차 (VPD): {vpd:.2f} kPa
+        
+        [가이드북 전문 지식 베이스]
         {{context}}
+        
+        위 가이드북 지식과 실시간 예측 컨텍스트를 융합하여 농민이 즉시 실행 가능한 솔루션을 제공하세요. 수치 한계선(온습도 임계치)을 언급할 때는 반드시 정확한 수치를 팩트 기반으로 제시하십시오.
         """
         
         prompt = ChatPromptTemplate.from_messages([
@@ -81,41 +123,18 @@ class SmartFarmRAG:
             ("human", "{input}")
         ])
 
-        # 체인 조립 (최신 방식)
-        combine_docs_chain = create_stuff_documents_chain(self.llm, prompt)
-        retrieval_chain = create_retrieval_chain(self.vector_db.as_retriever(), combine_docs_chain)
-        
-        # 실행 (invoke 사용)
-        response = retrieval_chain.invoke({"input": user_question})
-        return response["answer"]
+        # 내부 문서들을 조인하는 헬퍼 함수
+        def format_docs(docs):
+            return "\n\n".join(doc.page_content for doc in docs)
 
-# 실행 예시
-if __name__ == "__main__":
-    print("🍓 스마트팜 AI 어드바이저를 시작합니다. (종료하려면 '종료' 또는 'exit' 입력)")
-    
-    # 1. 시스템 초기화
-    rag = SmartFarmRAG()
-    print("✅ 데이터 로딩 및 분석 완료! 질문을 입력해주세요.\n")
-
-    # 2. 무한 루프를 통해 지속적으로 질문 받기
-    while True:
-        user_input = input("👤 질문: ").strip()
+        # 🌟 최신 LCEL 파이프라인 사슬 조립 (연산자 선언식)
+        rag_chain = (
+            {"context": self.retriever | format_docs, "input": RunnablePassthrough()}
+            | prompt
+            | self.llm
+            | StrOutputParser()
+        )
         
-        # 종료 조건 확인
-        if user_input.lower() in ['종료', 'exit', 'quit', 'q']:
-            print("👋 어드바이저를 종료합니다. 풍년 되세요!")
-            break
-            
-        if not user_input:
-            continue
-
-        print("🔍 가이드북 분석 중...")
-        
-        try:
-            # AI에게 질문하고 답변 받기
-            answer = rag.ask_advisor(user_input)
-            print(f"\n🤖 AI 어드바이저 조언:\n{answer}\n")
-            print("-" * 50)
-            
-        except Exception as e:
-            print(f"❌ 오류 발생: {e}")
+        # 최종 인보크 실행
+        answer = rag_chain.invoke(user_question)
+        return answer
