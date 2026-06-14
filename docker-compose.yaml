@@ -5,9 +5,9 @@ services:
     image: postgres:15
     container_name: smart-farm-db
     environment:
-      - POSTGRES_USER=tae_tae
-      - POSTGRES_PASSWORD=smartfarm
-      - POSTGRES_DB=agriculture
+      - POSTGRES_USER=${DB_USER}       
+      - POSTGRES_PASSWORD=${DB_PASSWORD} 
+      - POSTGRES_DB=${DB_NAME}
     ports:
       - "5432:5432"
     volumes:
